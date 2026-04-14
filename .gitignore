@@ -1,0 +1,5 @@
+.env
+transmission/config/
+jellyfin/config/
+jellyfin/cache/
+*.log

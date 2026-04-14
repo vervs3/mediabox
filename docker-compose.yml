@@ -1,0 +1,55 @@
+services:
+  transmission:
+    image: lscr.io/linuxserver/transmission:latest
+    container_name: transmission
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-Europe/Moscow}
+      - TRANSMISSION_WEB_HOME=/config/flood-ui/
+    ports:
+      - "9091:9091"
+      - "51413:51413"
+      - "51413:51413/udp"
+    volumes:
+      - ./transmission/config:/config
+      - ./transmission/custom-cont-init.d:/custom-cont-init.d
+      - downloads:/downloads
+
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-Europe/Moscow}
+    ports:
+      - "8096:8096"
+    volumes:
+      - ./jellyfin/config:/config
+      - ./jellyfin/cache:/cache
+      - downloads:/media
+
+  bot:
+    build: ./bot
+    image: transmission-bot
+    container_name: transmission-bot
+    restart: unless-stopped
+    network_mode: "service:transmission"
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ALLOWED_USER_ID=${ALLOWED_USER_ID}
+      - TRANSMISSION_URL=http://localhost:9091/transmission/rpc
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-30}
+    depends_on:
+      - transmission
+
+volumes:
+  downloads:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: ${SMB_HOST}
+      o: "username=${SMB_USER},password=${SMB_PASSWORD},vers=3.0,uid=1000,gid=1000,file_mode=0777,dir_mode=0777"
