@@ -3,3 +3,6 @@ transmission/config/
 jellyfin/config/
 jellyfin/cache/
 *.log
+.claude/
+HABR_ARTICLE.md
+zai.bat

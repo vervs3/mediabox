@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import math
+import functools
 from datetime import timedelta
 
 import httpx
@@ -11,10 +12,11 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 from telegram.constants import ParseMode
+from telegram.error import NetworkError, TimedOut, RetryAfter
 
 # --- Config ---
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ALLOWED_USER_ID = int(os.environ["ALLOWED_USER_ID"])
+ALLOWED_USER_IDS = {int(uid) for uid in os.environ["ALLOWED_USER_IDS"].split(",")}
 TRANSMISSION_URL = os.environ.get("TRANSMISSION_URL", "http://transmission:9091/transmission/rpc")
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "30"))
 
@@ -174,16 +176,19 @@ def torrent_keyboard(t):
 
 # --- Auth ---
 def auth(func):
+    @functools.wraps(func)
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != ALLOWED_USER_ID:
-            await update.message.reply_text("⛔ Доступ запрещён")
+        if not update.effective_user or update.effective_user.id not in ALLOWED_USER_IDS:
+            if update.message:
+                await update.message.reply_text("⛔ Доступ запрещён")
             return
         await func(update, ctx)
     return wrapper
 
 def auth_callback(func):
+    @functools.wraps(func)
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != ALLOWED_USER_ID:
+        if not update.effective_user or update.effective_user.id not in ALLOWED_USER_IDS:
             await update.callback_query.answer("⛔ Нет доступа", show_alert=True)
             return
         await func(update, ctx)
@@ -385,12 +390,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # --- Background completion checker ---
 async def check_completed(app: Application):
     global completed_ids
-    try:
-        torrents = await client.get_torrents(["id", "percentDone"])
-        completed_ids = {t["id"] for t in torrents if t["percentDone"] == 1.0}
-        log.info(f"Init: {len(completed_ids)} уже завершённых")
-    except Exception as e:
-        log.warning(f"Init error: {e}")
+
+    # Wait for Transmission to be ready before first poll
+    for attempt in range(10):
+        try:
+            torrents = await client.get_torrents(["id", "percentDone"])
+            completed_ids = {t["id"] for t in torrents if t["percentDone"] == 1.0}
+            log.info(f"Init: {len(completed_ids)} уже завершённых")
+            break
+        except Exception as e:
+            log.warning(f"Init attempt {attempt+1}/10 failed: {e}")
+            await asyncio.sleep(10)
 
     while True:
         await asyncio.sleep(CHECK_INTERVAL)
@@ -404,14 +414,29 @@ async def check_completed(app: Application):
                         InlineKeyboardButton("📋 Подробнее", callback_data=f"info:{tid}"),
                         InlineKeyboardButton("🗑 Удалить", callback_data=f"del_ask:{tid}"),
                     ]])
-                    await app.bot.send_message(
-                        ALLOWED_USER_ID,
-                        f"✅ *Скачано\\!*\n\n📁 `{t['name']}`\n💾 {fmt_size(t['totalSize'])}",
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_markup=kb
-                    )
+                    for uid in ALLOWED_USER_IDS:
+                        try:
+                            await app.bot.send_message(
+                                uid,
+                                f"✅ *Скачано\\!*\n\n📁 `{t['name']}`\n💾 {fmt_size(t['totalSize'])}",
+                                parse_mode=ParseMode.MARKDOWN_V2,
+                                reply_markup=kb
+                            )
+                        except RetryAfter as e:
+                            log.warning(f"Telegram flood control, ждём {e.retry_after}s")
+                            await asyncio.sleep(e.retry_after)
+                        except (NetworkError, TimedOut) as e:
+                            log.warning(f"Telegram недоступен при отправке уведомления: {e}")
+                            completed_ids.discard(tid)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             log.warning(f"Ошибка проверки: {e}")
+
+
+def _on_task_done(task: asyncio.Task):
+    if not task.cancelled() and task.exception():
+        log.error(f"check_completed упал: {task.exception()}", exc_info=task.exception())
 
 
 async def post_init(app: Application):
@@ -433,7 +458,8 @@ async def post_init(app: Application):
     await app.bot.set_my_short_description(
         "🌊 Управление Transmission — торренты, статистика и уведомления в Telegram"
     )
-    asyncio.create_task(check_completed(app))
+    task = asyncio.create_task(check_completed(app))
+    task.add_done_callback(_on_task_done)
 
 
 def main():

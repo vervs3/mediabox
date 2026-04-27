@@ -25,11 +25,14 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=${TZ:-Europe/Moscow}
+      - JELLYFIN_CONFIG_DIR=/config
+      - JELLYFIN_DATA_DIR=/config/data
+      - JELLYFIN_CACHE_DIR=/config/cache
+      - JELLYFIN_LOG_DIR=/config/log
     ports:
       - "8096:8096"
     volumes:
       - ./jellyfin/config:/config
-      - ./jellyfin/cache:/cache
       - downloads:/media
 
   bot:
@@ -40,7 +43,7 @@ services:
     network_mode: "service:transmission"
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
-      - ALLOWED_USER_ID=${ALLOWED_USER_ID}
+      - ALLOWED_USER_IDS=${ALLOWED_USER_IDS}
       - TRANSMISSION_URL=http://localhost:9091/transmission/rpc
       - CHECK_INTERVAL=${CHECK_INTERVAL:-30}
     depends_on:
